@@ -44,7 +44,7 @@ func (c *Counter) Update(current int) {
 	if !c.active {
 		return
 	}
-	fmt.Fprintf(c.w, "\r%s... %d", c.label, current)
+	fmt.Fprintf(c.w, "\r\033[K%s... %d", c.label, current)
 }
 
 // SetMessage updates the counter label text.
@@ -118,7 +118,7 @@ func (s *Spinner) tick() {
 		return
 	}
 	frame := spinnerFrames[s.frame%len(spinnerFrames)]
-	fmt.Fprintf(s.w, "\r%s %s", frame, s.label)
+	fmt.Fprintf(s.w, "\r\033[K%s %s", frame, s.label)
 	s.frame++
 }
 
