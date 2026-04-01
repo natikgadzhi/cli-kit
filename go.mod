@@ -3,6 +3,7 @@ module github.com/natikgadzhi/cli-kit
 go 1.26.1
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/spf13/cobra v1.10.2
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/term v0.41.0
