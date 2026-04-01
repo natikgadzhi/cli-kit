@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -57,8 +58,7 @@ type RetryTransport struct {
 	// tests to avoid real sleeps. Defaults to time.Sleep.
 	timerFunc func(time.Duration)
 
-	// defaultsApplied tracks whether defaults have been filled in.
-	defaultsApplied bool
+	once sync.Once
 }
 
 // NewRetryTransport creates a RetryTransport with the recommended defaults.
@@ -77,26 +77,25 @@ func NewRetryTransport(base http.RoundTripper) *RetryTransport {
 }
 
 // applyDefaults fills in zero-valued fields with sensible defaults.
+// Safe for concurrent use via sync.Once.
 func (t *RetryTransport) applyDefaults() {
-	if t.defaultsApplied {
-		return
-	}
-	if t.Base == nil {
-		t.Base = http.DefaultTransport
-	}
-	if t.MaxRetries == 0 {
-		t.MaxRetries = DefaultMaxRetries
-	}
-	if t.BaseDelay == 0 {
-		t.BaseDelay = DefaultBaseDelay
-	}
-	if t.MaxDelay == 0 {
-		t.MaxDelay = DefaultMaxDelay
-	}
-	if t.timerFunc == nil {
-		t.timerFunc = time.Sleep
-	}
-	t.defaultsApplied = true
+	t.once.Do(func() {
+		if t.Base == nil {
+			t.Base = http.DefaultTransport
+		}
+		if t.MaxRetries == 0 {
+			t.MaxRetries = DefaultMaxRetries
+		}
+		if t.BaseDelay == 0 {
+			t.BaseDelay = DefaultBaseDelay
+		}
+		if t.MaxDelay == 0 {
+			t.MaxDelay = DefaultMaxDelay
+		}
+		if t.timerFunc == nil {
+			t.timerFunc = time.Sleep
+		}
+	})
 }
 
 // RoundTrip executes the request and retries on retryable status codes.
