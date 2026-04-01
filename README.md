@@ -1,6 +1,12 @@
 # cli-kit
 
-Shared Go packages for building consistent, well-behaved CLI tools.
+Shared Go packages for building consistent, well-behaved CLI tools. Implements the conventions defined in [CLI_STANDARDS.md](https://github.com/natikgadzhi/template/blob/main/CLI_STANDARDS.md).
+
+## Requirement
+
+**If your Go CLI tool uses cli-kit, it must use cli-kit for all features that cli-kit covers.** Do not reimplement table rendering, progress indicators, error handling, retry logic, config loading, auth resolution, or debug logging locally when cli-kit provides them. This keeps tools consistent and avoids drift.
+
+If cli-kit doesn't cover a feature you need, either extend cli-kit or discuss adding it.
 
 ## Installation
 
@@ -8,162 +14,231 @@ Shared Go packages for building consistent, well-behaved CLI tools.
 go get github.com/natikgadzhi/cli-kit
 ```
 
+## Tools using cli-kit
+
+| Tool | Description | Repo |
+|------|-------------|------|
+| [fm](https://github.com/natikgadzhi/fm) | FastMail CLI | `github.com/natikgadzhi/fm` |
+| [gdrive-cli](https://github.com/natikgadzhi/gdrive-cli) | Google Drive CLI | `github.com/natikgadzhi/gdrive-cli` |
+| [slack-cli](https://github.com/natikgadzhi/slack-cli) | Slack CLI | `github.com/natikgadzhi/slack-cli` |
+| [claude-utils](https://github.com/natikgadzhi/claude-utils) | Obsidian vault sync | `github.com/natikgadzhi/claude-utils` |
+
 ## Packages
 
-### output
+### table — Bordered tables with terminal-width adaptation
 
-Output format flag with TTY auto-detection. Registers `-o/--output` on a Cobra command and resolves to `"json"` or `"table"` based on whether stdout is a terminal.
-
-```go
-output.RegisterFlag(rootCmd)
-
-format := output.Resolve(cmd)
-if output.IsJSON(format) {
-    output.PrintJSON(data)
-} else {
-    output.Print(format, data, myRenderer)
-}
-```
-
-Types that implement `output.TableRenderer` can render themselves as bordered tables.
-
-### table
-
-Bordered tables with box-drawing characters that automatically shrink columns to fit the terminal width. Overflowing values are truncated with an ellipsis.
+Renders tables with rounded corners, bold headers, and automatic column shrinking. Truncates overflowing values with `…`.
 
 ```go
+import "github.com/natikgadzhi/cli-kit/table"
+
 t := table.New()
-t.Header("Name", "Status", "Description")
-t.Row("alpha", "active", "First item")
-t.Row("beta", "inactive", "Second item")
+t.Header("Name", "Status", "Last Sync")
+t.Row("weekly-review", "0 conflicts", "31 Mar 2026 15:04")
 t.Flush()
 ```
 
-Use `table.NewWriter(w)` to write to a custom `io.Writer` instead of stdout.
-
-### progress
-
-Spinner and counter indicators that write to stderr. Automatically suppressed in JSON output mode.
-
-```go
-// Auto-ticking spinner
-sp := progress.NewSpinner("Loading...", format)
-sp.Start()
-defer sp.Finish()
-
-// Manual counter
-c := progress.NewCounter("Fetching items", format)
-defer c.Finish()
-c.Update(42)
+Output:
+```
+╭────────────────┬──────────────┬───────────────────╮
+│ NAME           │ STATUS       │ LAST SYNC         │
+├────────────────┼──────────────┼───────────────────┤
+│ weekly-review  │ 0 conflicts  │ 31 Mar 2026 15:04 │
+╰────────────────┴──────────────┴───────────────────╯
 ```
 
-Both types implement the `progress.Indicator` interface and are safe for concurrent use.
+Use `table.NewWriter(w)` to write to a custom `io.Writer`. Use `table.Truncate(s, n)` for standalone truncation.
 
-### errors
+**Source:** [`table/table.go`](table/table.go)
 
-Structured CLI errors with exit codes, HTTP error classification, and partial-result support.
+### output — Output format flag and TTY detection
 
-```go
-err := errors.NewCLIError(errors.ExitError, "something went wrong").
-    WithSuggestion("Try again with --force")
-errors.PrintError(err, jsonFormat)
-
-// Wrap an underlying error with user-facing context
-wrapped := errors.Wrap(err, "upload failed", "Check your network connection")
-
-// HTTP status → CLIError with auth verification
-cliErr := errors.HandleHTTPError(statusCode, "repos", "mytool", authChecker)
-
-// Exit the process with the right code
-errors.ExitWithError(err)
-```
-
-`PartialResult[T]` wraps results that may be incomplete due to rate-limiting or transient errors.
-
-### derived
-
-Derived data directory management and Markdown frontmatter utilities. Stores cached data as Markdown files with YAML frontmatter under `~/.local/share/lambdal/derived/{tool}/`.
+Registers `-o/--output` flag on a Cobra command. Auto-detects TTY: table for interactive terminals, JSON for pipes.
 
 ```go
-derived.RegisterFlag(rootCmd, "mytool")
-dir := derived.Resolve(cmd, "mytool")
-derived.EnsureDir(dir)
+import "github.com/natikgadzhi/cli-kit/output"
 
-fm := derived.NewFrontmatter("mytool", "issue", "123", "https://...", "mytool issues get 123")
-content := derived.FormatFile(fm, "# Issue 123\n...")
-```
+output.RegisterFlag(rootCmd)
 
-Includes `Parse` and `Render` for round-tripping frontmatter, and `ContentHash` for SHA-256 content fingerprinting.
-
-### ratelimit
-
-HTTP retry transport with exponential backoff, jitter, and Retry-After header parsing. Retries on 429 and 5xx responses.
-
-```go
-client := &http.Client{
-    Transport: ratelimit.NewRetryTransport(nil),
+format := output.Resolve(cmd)        // "json" or "table"
+if output.IsJSON(format) {
+    output.PrintJSON(data)
+} else {
+    t := table.New()
+    // ... render table
 }
 ```
 
-Configure retries, delays, and an optional `OnRetry` callback:
+**Source:** [`output/output.go`](output/output.go)
+
+### progress — Spinners and counters
+
+Auto-ticking spinner and manual counter. Suppressed in JSON mode. Thread-safe.
 
 ```go
+import "github.com/natikgadzhi/cli-kit/progress"
+
+// Spinner: auto-animates in a goroutine
+sp := progress.NewSpinner("Searching...", format)
+sp.Start()
+sp.SetLabel("Rate limited, retrying in 5s...")  // update mid-operation
+sp.Finish()                                      // clears the line
+
+// Counter: caller updates the count
+c := progress.NewCounter("Fetching emails", format)
+c.Update(42)
+c.Finish()
+```
+
+**Source:** [`progress/progress.go`](progress/progress.go)
+
+### ratelimit — HTTP retry transport
+
+`http.RoundTripper` with exponential backoff, ±25% jitter, and `Retry-After` header parsing. Retries on HTTP 429 and 5xx.
+
+```go
+import "github.com/natikgadzhi/cli-kit/ratelimit"
+
+client := &http.Client{
+    Transport: ratelimit.NewRetryTransport(http.DefaultTransport),
+}
+
+// Or configure:
 rt := &ratelimit.RetryTransport{
     Base:       http.DefaultTransport,
     MaxRetries: 3,
     BaseDelay:  2 * time.Second,
     RetryOn5xx: true,
     OnRetry: func(attempt int, delay time.Duration, status int) {
-        log.Printf("retry #%d after %s (HTTP %d)", attempt, delay, status)
+        spinner.SetLabel(fmt.Sprintf("Rate limited, retry %d...", attempt))
     },
 }
 ```
 
-### version
+**Source:** [`ratelimit/transport.go`](ratelimit/transport.go), [`ratelimit/retry_after.go`](ratelimit/retry_after.go)
 
-Standard `version` subcommand and `--version` flag. Version info is set via ldflags at build time and printed as JSON.
+### errors — Structured CLI errors
+
+Exit codes, HTTP error classification, partial results, and `ExitWithError` for the standard `Execute()` pattern.
 
 ```go
-info := &version.Info{Version: "1.0.0", Commit: "abc123", Date: "2025-01-01"}
-rootCmd.AddCommand(version.NewCommand(info))
-version.SetupFlag(rootCmd, info)
+import "github.com/natikgadzhi/cli-kit/errors"
+
+// Standard root command pattern:
+func Execute() {
+    if err := rootCmd.Execute(); err != nil {
+        errors.ExitWithError(err)  // prints error + suggestion, exits with code
+    }
+}
+
+// Wrap errors with user-facing context:
+errors.Wrap(err, "upload failed", "Check your network connection")
+errors.WrapAuth(err, "token expired", "Run 'mytool auth login'")
+
+// HTTP status → CLIError:
+errors.HandleHTTPError(resp.StatusCode, "/api/users", "mytool", authChecker)
 ```
 
-### debug
+Exit codes: `ExitSuccess` (0), `ExitError` (1), `ExitAuthError` (2).
 
-Debug logger that writes to stderr when `--debug` is passed. Thread-safe.
+**Source:** [`errors/errors.go`](errors/errors.go)
+
+### derived — Derived data directory and frontmatter
+
+Manages `~/.local/share/lambdal/derived/{tool}/` for cached markdown files with YAML frontmatter.
 
 ```go
-debug.RegisterFlag(rootCmd)
+import "github.com/natikgadzhi/cli-kit/derived"
 
-debug.Log("fetching page %d", page)
+// Write a derived file:
+fm := derived.NewFrontmatter("mytool", "issue", "123", "https://...", "mytool issues get 123")
+content := derived.FormatFile(fm, body)
+
+// Parse a file with frontmatter:
+meta, body, err := derived.Parse(fileContent)
+
+// Render modified frontmatter back:
+output := derived.Render(meta, body)
+
+// Content fingerprint (SHA-256, whitespace-trimmed):
+hash := derived.ContentHash(body)  // "sha256:abc123..."
 ```
 
-### config
+**Source:** [`derived/derived.go`](derived/derived.go), [`derived/parse.go`](derived/parse.go)
 
-TOML config file loading with tilde expansion. Looks for `~/.config/{tool}/config.toml` by default.
+### config — TOML config loading
+
+Loads `~/.config/{tool}/config.toml` with tilde expansion. Registers `--config` flag.
 
 ```go
-type Config struct {
-    Token string `toml:"token"`
-    Org   string `toml:"org"`
+import "github.com/natikgadzhi/cli-kit/config"
+
+type MyConfig struct {
+    Vault   string `toml:"vault"`
+    Debug   bool   `toml:"debug"`
 }
 
 config.RegisterFlag(rootCmd, "mytool")
 
-var cfg Config
+var cfg MyConfig
 err := config.Load(config.DefaultPath("mytool"), &cfg)
 ```
 
-### auth
+**Source:** [`config/config.go`](config/config.go)
 
-Token masking for safe display in terminal output.
+### auth — Token resolution and masking
+
+Three-source token resolution: CLI flag → env var → OS keychain. Cross-platform keychain via `go-keyring`.
 
 ```go
-auth.MaskToken("ghp_abc123xyz789") // "ghp_•••z789"
-auth.MaskToken("")                 // "(none)"
+import "github.com/natikgadzhi/cli-kit/auth"
+
+// Resolve token from highest-priority source:
+token, source, err := auth.ResolveToken(auth.TokenSource{
+    FlagValue:       flagVal,
+    EnvVar:          "MYTOOL_TOKEN",
+    KeychainService: "mytool",
+    KeychainKey:     "api-token",
+})
+
+// Store/delete in keychain:
+auth.StoreToken("mytool", "api-token", token)
+auth.DeleteToken("mytool", "api-token")
+
+// Safe display:
+auth.MaskToken("ghp_abc123xyz789")  // "ghp_•••z789"
+
+// Register --token flag:
+auth.RegisterFlag(rootCmd, "MYTOOL_TOKEN")
 ```
 
-## CLI Standards
+**Source:** [`auth/auth.go`](auth/auth.go)
 
-These packages implement the conventions defined in [CLI_STANDARDS.md](https://github.com/natikgadzhi/cli-tool-template/blob/main/CLI_STANDARDS.md) in the template repo.
+### debug — Standardized debug logging
+
+Writes `Debug: <message>` to stderr when `--debug` is passed. Thread-safe.
+
+```go
+import "github.com/natikgadzhi/cli-kit/debug"
+
+debug.RegisterFlag(rootCmd)
+
+debug.Log("fetching page %d of %d", page, total)
+debug.Log("rate limited, waiting %s", delay)
+```
+
+**Source:** [`debug/debug.go`](debug/debug.go)
+
+### version — Version command and flag
+
+Standard `version` subcommand and `--version` flag. Outputs JSON with version, commit, and build date.
+
+```go
+import "github.com/natikgadzhi/cli-kit/version"
+
+info := &version.Info{Version: Version, Commit: Commit, Date: Date}
+rootCmd.AddCommand(version.NewCommand(info))
+version.SetupFlag(rootCmd, info)
+```
+
+**Source:** [`version/version.go`](version/version.go)
