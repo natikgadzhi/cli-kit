@@ -6,6 +6,7 @@ package errors
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 )
@@ -23,10 +24,16 @@ type CLIError struct {
 	Code       int    `json:"code,omitempty"`
 	Suggestion string `json:"suggestion,omitempty"`
 	ExitCode   int    `json:"-"`
+	Err        error  `json:"-"` // Wrapped underlying error
 }
 
 func (e *CLIError) Error() string {
 	return e.Message
+}
+
+// Unwrap returns the underlying wrapped error, if any.
+func (e *CLIError) Unwrap() error {
+	return e.Err
 }
 
 // NewCLIError creates a new CLIError with the given message and exit code.
@@ -71,6 +78,71 @@ func PrintWarning(msg string, jsonFormat bool) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
+}
+
+// exitAction describes how ExitWithError should respond to an error.
+// It is returned by classifyError so the exit logic is testable without
+// actually calling os.Exit.
+type exitAction struct {
+	Message    string
+	Suggestion string
+	ExitCode   int
+}
+
+// classifyError inspects err and returns the appropriate exitAction.
+// If err is nil it returns nil (no action needed).
+func classifyError(err error) *exitAction {
+	if err == nil {
+		return nil
+	}
+	var cliErr *CLIError
+	if errors.As(err, &cliErr) {
+		return &exitAction{
+			Message:    cliErr.Message,
+			Suggestion: cliErr.Suggestion,
+			ExitCode:   cliErr.ExitCode,
+		}
+	}
+	return &exitAction{
+		Message:  err.Error(),
+		ExitCode: ExitError,
+	}
+}
+
+// ExitWithError prints the error to stderr and exits with the appropriate code.
+// If err is a *CLIError, uses its ExitCode and prints its Suggestion (if any).
+// Otherwise exits with ExitError (1). If err is nil, does nothing.
+func ExitWithError(err error) {
+	action := classifyError(err)
+	if action == nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Error: %s\n", action.Message)
+	if action.Suggestion != "" {
+		fmt.Fprintf(os.Stderr, "%s\n", action.Suggestion)
+	}
+	os.Exit(action.ExitCode)
+}
+
+// Wrap creates a CLIError from an existing error with a user-facing message
+// and an optional suggestion. The original error is preserved for unwrapping.
+func Wrap(err error, message string, suggestion string) *CLIError {
+	return &CLIError{
+		Message:    message,
+		Err:        err,
+		Suggestion: suggestion,
+		ExitCode:   ExitError,
+	}
+}
+
+// WrapAuth is like Wrap but sets ExitCode to ExitAuthError (2).
+func WrapAuth(err error, message string, suggestion string) *CLIError {
+	return &CLIError{
+		Message:    message,
+		Err:        err,
+		Suggestion: suggestion,
+		ExitCode:   ExitAuthError,
+	}
 }
 
 // AuthChecker is a function that verifies whether current credentials are valid.
