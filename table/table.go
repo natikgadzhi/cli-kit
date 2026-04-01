@@ -29,6 +29,9 @@ type Table struct {
 	rows    [][]string
 	widths  []int
 
+	// RowBorders adds a separator line between each data row.
+	RowBorders bool
+
 	// termWidthFunc is used to determine the terminal width.
 	// It can be overridden for testing.
 	termWidthFunc func() int
@@ -73,8 +76,11 @@ func (t *Table) Flush() error {
 	fmt.Fprintln(t.out, t.line("╭", "┬", "╮"))
 	fmt.Fprintln(t.out, t.formatRow(t.headers, true))
 	fmt.Fprintln(t.out, t.line("├", "┼", "┤"))
-	for _, row := range t.rows {
+	for i, row := range t.rows {
 		fmt.Fprintln(t.out, t.formatRow(row, false))
+		if t.RowBorders && i < len(t.rows)-1 {
+			fmt.Fprintln(t.out, t.line("├", "┼", "┤"))
+		}
 	}
 	fmt.Fprintln(t.out, t.line("╰", "┴", "╯"))
 	return nil
