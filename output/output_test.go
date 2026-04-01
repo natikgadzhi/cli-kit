@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/natikgadzhi/cli-kit/table"
 	"github.com/spf13/cobra"
 )
 
@@ -69,37 +70,45 @@ type testRenderer struct {
 	items []testData
 }
 
-func (r *testRenderer) RenderTable(t *Table) {
+func (r *testRenderer) RenderTable(t *table.Table) {
 	t.Header("Name", "Value")
 	for _, item := range r.items {
 		t.Row(item.Name, strings.Repeat("*", item.Value))
 	}
 }
 
-func TestTableOutput(t *testing.T) {
+func TestTableRendererInterface(t *testing.T) {
 	var buf bytes.Buffer
-	tbl := NewTableWriter(&buf)
-	tbl.Header("Name", "Count")
-	tbl.Row("alpha", "10")
-	tbl.Row("beta", "20")
+	tbl := table.NewWriter(&buf)
+
+	renderer := &testRenderer{
+		items: []testData{
+			{Name: "alpha", Value: 3},
+			{Name: "beta", Value: 5},
+		},
+	}
+	renderer.RenderTable(tbl)
 	tbl.Flush()
 
 	out := buf.String()
 	if !strings.Contains(out, "NAME") {
-		t.Error("expected uppercased header")
+		t.Error("expected uppercased header NAME")
 	}
 	if !strings.Contains(out, "alpha") {
-		t.Error("expected data row")
+		t.Error("expected data row 'alpha'")
 	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 3 {
-		t.Errorf("expected 3 lines (header + 2 rows), got %d", len(lines))
+	if !strings.Contains(out, "***") {
+		t.Error("expected value '***' for alpha")
+	}
+	// Bordered table should have box-drawing characters.
+	if !strings.Contains(out, "┌") {
+		t.Error("expected bordered table with box-drawing characters")
 	}
 }
 
 func TestPrintJSON(t *testing.T) {
 	data := testData{Name: "test", Value: 42}
-	// We can't easily capture stdout in a test, but we can test the JSON encoding logic
+	// We can't easily capture stdout in a test, but we can test the JSON encoding logic.
 	b, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		t.Fatal(err)

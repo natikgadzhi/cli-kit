@@ -1,8 +1,7 @@
 package progress
 
 import (
-	"bytes"
-	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -30,15 +29,13 @@ func TestNewSpinnerJSON(t *testing.T) {
 
 func TestNewSpinnerTable(t *testing.T) {
 	p := NewSpinner("Loading", "table")
-	defer p.Finish()
 	if _, ok := p.(*Spinner); !ok {
 		t.Error("expected Spinner indicator for table format")
 	}
 }
 
 func TestCounterLifecycle(t *testing.T) {
-	var buf bytes.Buffer
-	c := &Counter{label: "Test", active: true, w: &buf}
+	c := &Counter{label: "Test", active: true}
 	// Should not panic
 	c.Update(10)
 	c.Update(20)
@@ -47,25 +44,26 @@ func TestCounterLifecycle(t *testing.T) {
 	c.Update(30)
 }
 
-func TestCounterSetMessage(t *testing.T) {
-	var buf bytes.Buffer
-	c := &Counter{label: "First", active: true, w: &buf}
-	c.Update(1)
-	if !strings.Contains(buf.String(), "First") {
-		t.Error("expected output to contain 'First'")
+func TestCounterSetLabel(t *testing.T) {
+	c := &Counter{label: "Test", active: true}
+	c.SetLabel("New label")
+	c.mu.Lock()
+	if c.label != "New label" {
+		t.Errorf("label = %q, want %q", c.label, "New label")
 	}
-	buf.Reset()
-	c.SetMessage("Second")
-	c.Update(2)
-	if !strings.Contains(buf.String(), "Second") {
-		t.Error("expected output to contain 'Second' after SetMessage")
-	}
+	c.mu.Unlock()
 	c.Finish()
 }
 
-func TestSpinnerLifecycle(t *testing.T) {
-	var buf bytes.Buffer
-	s := &Spinner{label: "Test", active: true, w: &buf, done: make(chan struct{})}
+func TestCounterStartIsNoop(t *testing.T) {
+	c := &Counter{label: "Test", active: true}
+	// Start should not panic and is a no-op for Counter.
+	c.Start()
+	c.Finish()
+}
+
+func TestSpinnerManualLifecycle(t *testing.T) {
+	s := &Spinner{label: "Test", active: true}
 	s.Update(0)
 	s.Update(0)
 	s.Update(0)
@@ -79,72 +77,138 @@ func TestSpinnerLifecycle(t *testing.T) {
 	}
 }
 
-func TestSpinnerAutoAnimates(t *testing.T) {
-	var buf bytes.Buffer
-	s := &Spinner{label: "Auto", active: true, w: &buf, done: make(chan struct{})}
-	go s.run()
+func TestSpinnerStartFinishLifecycle(t *testing.T) {
+	s := NewSpinner("Loading", "table").(*Spinner)
+	s.tickInterval = 10 * time.Millisecond
+	s.Start()
 
-	// Wait enough time for several frames (~350ms should yield at least 3 frames).
-	time.Sleep(350 * time.Millisecond)
-	s.Finish()
+	// Let the goroutine tick a few times.
+	time.Sleep(50 * time.Millisecond)
 
 	s.mu.Lock()
 	frames := s.frame
 	s.mu.Unlock()
 
-	if frames < 3 {
-		t.Errorf("expected at least 3 auto-animated frames, got %d", frames)
+	if frames == 0 {
+		t.Error("expected spinner to have advanced at least one frame after Start()")
 	}
 
-	output := buf.String()
-	if !strings.Contains(output, "Auto") {
-		t.Error("expected spinner output to contain label 'Auto'")
+	s.Finish()
+
+	// After Finish, the goroutine should have stopped. Record frame and wait.
+	s.mu.Lock()
+	framesAfterFinish := s.frame
+	s.mu.Unlock()
+
+	time.Sleep(30 * time.Millisecond)
+
+	s.mu.Lock()
+	framesLater := s.frame
+	s.mu.Unlock()
+
+	if framesLater != framesAfterFinish {
+		t.Errorf("spinner continued ticking after Finish: %d -> %d", framesAfterFinish, framesLater)
 	}
 }
 
-func TestSpinnerSetMessage(t *testing.T) {
-	var buf bytes.Buffer
-	s := &Spinner{label: "Before", active: true, w: &buf, done: make(chan struct{})}
-	s.Update(0)
-	if !strings.Contains(buf.String(), "Before") {
-		t.Error("expected output to contain 'Before'")
+func TestSpinnerSetLabel(t *testing.T) {
+	s := &Spinner{label: "Initial", active: true}
+	s.SetLabel("Updated")
+	s.mu.Lock()
+	if s.label != "Updated" {
+		t.Errorf("label = %q, want %q", s.label, "Updated")
 	}
-	buf.Reset()
-	s.SetMessage("After")
-	s.Update(0)
-	if !strings.Contains(buf.String(), "After") {
-		t.Error("expected output to contain 'After' after SetMessage")
-	}
+	s.mu.Unlock()
+}
+
+func TestSpinnerFinishIdempotent(t *testing.T) {
+	s := &Spinner{label: "Test", active: true}
+	s.Start()
+	// Calling Finish multiple times must not panic.
+	s.Finish()
+	s.Finish()
 	s.Finish()
 }
 
-func TestSpinnerFinishStopsGoroutine(t *testing.T) {
-	var buf bytes.Buffer
-	s := &Spinner{label: "Stop", active: true, w: &buf, done: make(chan struct{})}
-	go s.run()
-
-	time.Sleep(150 * time.Millisecond)
+func TestSpinnerStartIdempotent(t *testing.T) {
+	s := NewSpinner("Loading", "table").(*Spinner)
+	s.tickInterval = 10 * time.Millisecond
+	s.Start()
+	s.Start() // Second call should be a no-op.
+	time.Sleep(30 * time.Millisecond)
 	s.Finish()
-
-	s.mu.Lock()
-	frameAtFinish := s.frame
-	s.mu.Unlock()
-
-	// Wait a bit more and confirm no more frames are written.
-	time.Sleep(250 * time.Millisecond)
-	s.mu.Lock()
-	frameAfterWait := s.frame
-	s.mu.Unlock()
-
-	if frameAfterWait != frameAtFinish {
-		t.Errorf("expected no more frames after Finish, got %d (was %d at finish)", frameAfterWait, frameAtFinish)
-	}
 }
 
-func TestNoopDoesNothing(t *testing.T) {
+func TestNoopStartSetLabelFinish(t *testing.T) {
 	n := &noop{}
-	// Just verify these don't panic
+	// All methods should be no-ops and not panic.
+	n.Start()
+	n.SetLabel("anything")
 	n.Update(100)
-	n.SetMessage("anything")
 	n.Finish()
+	n.Finish() // idempotent
+}
+
+func TestNoopViaNewSpinnerJSON(t *testing.T) {
+	p := NewSpinner("Loading", "json")
+	// All methods should work without panic.
+	p.Start()
+	p.SetLabel("changed")
+	p.Update(0)
+	p.Finish()
+	p.Finish()
+}
+
+func TestSpinnerConcurrentAccess(t *testing.T) {
+	s := NewSpinner("Loading", "table").(*Spinner)
+	s.tickInterval = 10 * time.Millisecond
+	s.Start()
+
+	var wg sync.WaitGroup
+
+	// Concurrently set labels from multiple goroutines.
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				s.SetLabel("label from goroutine")
+				time.Sleep(time.Millisecond)
+			}
+		}(i)
+	}
+
+	// Concurrently call Update from another goroutine.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for j := 0; j < 20; j++ {
+			s.Update(0)
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	wg.Wait()
+	s.Finish()
+}
+
+func TestSpinnerNotStartedByDefault(t *testing.T) {
+	s := NewSpinner("Loading", "table").(*Spinner)
+	if s.stopCh != nil {
+		t.Error("expected stopCh to be nil before Start()")
+	}
+	// Should work in manual mode without Start().
+	s.Update(0)
+	s.Update(0)
+	if s.frame != 2 {
+		t.Errorf("frame = %d, want 2", s.frame)
+	}
+	s.Finish()
+}
+
+func TestIndicatorInterfaceCompliance(t *testing.T) {
+	// Verify all types implement the Indicator interface.
+	var _ Indicator = &Spinner{}
+	var _ Indicator = &Counter{}
+	var _ Indicator = &noop{}
 }

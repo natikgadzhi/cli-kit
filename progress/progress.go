@@ -6,7 +6,6 @@ package progress
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"sync"
 	"time"
@@ -14,8 +13,20 @@ import (
 
 // Indicator is the interface for all progress indicators.
 type Indicator interface {
+	// Start launches a background goroutine that auto-ticks the indicator.
+	// For Spinner, this animates frames at ~100ms intervals.
+	// Callers may use the old manual Update() pattern instead of Start().
+	Start()
+
+	// SetLabel changes the indicator's display label. Thread-safe.
+	SetLabel(label string)
+
+	// Update manually advances the indicator. For Counter, current is the count
+	// to display. For Spinner, the parameter is ignored and the frame advances.
 	Update(current int)
-	SetMessage(msg string)
+
+	// Finish stops any background goroutine and clears the progress line.
+	// Safe to call multiple times.
 	Finish()
 }
 
@@ -25,7 +36,6 @@ type Counter struct {
 	label  string
 	active bool
 	mu     sync.Mutex
-	w      io.Writer
 }
 
 // NewCounter creates a new counter progress indicator.
@@ -34,7 +44,18 @@ func NewCounter(label string, format string) Indicator {
 	if format == "json" {
 		return &noop{}
 	}
-	return &Counter{label: label, active: true, w: os.Stderr}
+	return &Counter{label: label, active: true}
+}
+
+// Start is a no-op for Counter. Counter requires explicit Update(n) calls
+// to display the count.
+func (c *Counter) Start() {}
+
+// SetLabel changes the counter's display label. Thread-safe.
+func (c *Counter) SetLabel(label string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.label = label
 }
 
 // Update displays the current count. Overwrites the previous line on stderr.
@@ -44,14 +65,7 @@ func (c *Counter) Update(current int) {
 	if !c.active {
 		return
 	}
-	fmt.Fprintf(c.w, "\r\033[K%s... %d", c.label, current)
-}
-
-// SetMessage updates the counter label text.
-func (c *Counter) SetMessage(msg string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.label = msg
+	fmt.Fprintf(os.Stderr, "\r%s... %d", c.label, current)
 }
 
 // Finish clears the progress line from stderr.
@@ -63,79 +77,98 @@ func (c *Counter) Finish() {
 	}
 	c.active = false
 	// Clear the line
-	fmt.Fprintf(c.w, "\r\033[K")
+	fmt.Fprintf(os.Stderr, "\r\033[K")
 }
 
 // Spinner shows a spinning indicator for operations with unknown total.
-// It self-animates via a background goroutine that advances frames at ~100ms.
 type Spinner struct {
-	label  string
-	active bool
-	frame  int
-	mu     sync.Mutex
-	w      io.Writer
-	done   chan struct{}
+	label        string
+	active       bool
+	frame        int
+	tickInterval time.Duration // interval between auto-tick frames; 0 means use DefaultTickInterval
+	mu           sync.Mutex
+	stopCh       chan struct{} // closed by Finish to stop the auto-tick goroutine
 }
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
+// DefaultTickInterval is the interval between spinner frame advances.
+var DefaultTickInterval = 100 * time.Millisecond
+
 // NewSpinner creates a new spinner progress indicator.
 // If format is "json", returns a no-op indicator.
-// The spinner starts self-animating immediately at ~100ms per frame.
+// The spinner is not started automatically; call Start() to begin auto-ticking
+// or use Update() for manual frame control.
 func NewSpinner(label string, format string) Indicator {
 	if format == "json" {
 		return &noop{}
 	}
-	s := &Spinner{
-		label:  label,
-		active: true,
-		w:      os.Stderr,
-		done:   make(chan struct{}),
-	}
-	go s.run()
-	return s
+	return &Spinner{label: label, active: true}
 }
 
-// run is the background goroutine that auto-advances the spinner frames.
+// Start launches a background goroutine that auto-advances the spinner frame
+// every DefaultTickInterval. The goroutine stops when Finish() is called.
+func (s *Spinner) Start() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.active || s.stopCh != nil {
+		// Already started or already finished.
+		return
+	}
+	s.stopCh = make(chan struct{})
+	go s.run()
+}
+
+// run is the auto-tick loop. It ticks at the spinner's tick interval until
+// stopCh is closed.
 func (s *Spinner) run() {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	interval := s.tickInterval
+	if interval == 0 {
+		interval = DefaultTickInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-s.done:
+		case <-s.stopCh:
 			return
 		case <-ticker.C:
-			s.tick()
+			s.mu.Lock()
+			if !s.active {
+				s.mu.Unlock()
+				return
+			}
+			frame := spinnerFrames[s.frame%len(spinnerFrames)]
+			fmt.Fprintf(os.Stderr, "\r%s %s", frame, s.label)
+			s.frame++
+			s.mu.Unlock()
 		}
 	}
 }
 
-// tick advances the spinner by one frame and renders it.
-func (s *Spinner) tick() {
+// SetLabel changes the spinner's display label. Thread-safe.
+// Useful for showing status changes like "Rate limited, retrying in 5s...".
+func (s *Spinner) SetLabel(label string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.label = label
+}
+
+// Update advances the spinner by one frame. The current parameter is ignored.
+// This is the manual mode: callers can use Update() in a loop instead of Start().
+func (s *Spinner) Update(_ int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.active {
 		return
 	}
 	frame := spinnerFrames[s.frame%len(spinnerFrames)]
-	fmt.Fprintf(s.w, "\r\033[K%s %s", frame, s.label)
+	fmt.Fprintf(os.Stderr, "\r%s %s", frame, s.label)
 	s.frame++
 }
 
-// Update manually advances the spinner by one frame. The current parameter is ignored.
-// Note: the spinner auto-animates, so calling Update is not required.
-func (s *Spinner) Update(_ int) {
-	s.tick()
-}
-
-// SetMessage updates the spinner label text.
-func (s *Spinner) SetMessage(msg string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.label = msg
-}
-
-// Finish stops the spinner animation and clears the line from stderr.
+// Finish stops the auto-tick goroutine (if running) and clears the spinner
+// line from stderr. Safe to call multiple times.
 func (s *Spinner) Finish() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -143,13 +176,16 @@ func (s *Spinner) Finish() {
 		return
 	}
 	s.active = false
-	close(s.done)
-	fmt.Fprintf(s.w, "\r\033[K")
+	if s.stopCh != nil {
+		close(s.stopCh)
+	}
+	fmt.Fprintf(os.Stderr, "\r\033[K")
 }
 
 // noop is a silent progress indicator used in JSON mode.
 type noop struct{}
 
-func (n *noop) Update(_ int)       {}
-func (n *noop) SetMessage(_ string) {}
-func (n *noop) Finish()            {}
+func (n *noop) Start()              {}
+func (n *noop) SetLabel(_ string)   {}
+func (n *noop) Update(_ int)        {}
+func (n *noop) Finish()             {}

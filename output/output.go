@@ -1,6 +1,6 @@
 // Package output provides consistent output formatting for CLI tools.
 //
-// It supports two formats: "json" (structured JSON) and "table" (human-readable aligned columns).
+// It supports two formats: "json" (structured JSON) and "table" (human-readable bordered columns).
 // By default, it detects whether stdout is a TTY and chooses accordingly:
 // TTY → table, piped/redirected → json.
 //
@@ -14,11 +14,10 @@ package output
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strings"
-	"text/tabwriter"
 
+	"github.com/natikgadzhi/cli-kit/table"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -76,42 +75,6 @@ func PrintJSON(data any) error {
 	return enc.Encode(data)
 }
 
-// Table provides a simple tabwriter-based table output.
-type Table struct {
-	w *tabwriter.Writer
-}
-
-// NewTable creates a new table writer that writes to stdout.
-func NewTable() *Table {
-	return NewTableWriter(os.Stdout)
-}
-
-// NewTableWriter creates a new table writer with a custom destination.
-func NewTableWriter(out io.Writer) *Table {
-	return &Table{
-		w: tabwriter.NewWriter(out, 0, 4, 2, ' ', 0),
-	}
-}
-
-// Header writes a header row. Values are tab-separated and uppercased.
-func (t *Table) Header(columns ...string) {
-	upper := make([]string, len(columns))
-	for i, c := range columns {
-		upper[i] = strings.ToUpper(c)
-	}
-	fmt.Fprintln(t.w, strings.Join(upper, "\t"))
-}
-
-// Row writes a data row. Values are tab-separated.
-func (t *Table) Row(values ...string) {
-	fmt.Fprintln(t.w, strings.Join(values, "\t"))
-}
-
-// Flush flushes the underlying tabwriter.
-func (t *Table) Flush() error {
-	return t.w.Flush()
-}
-
 // Print writes data in the specified format. For JSON it marshals to stdout.
 // For table, the caller provides a TableRenderer that knows how to render the data.
 func Print(format string, data any, renderer TableRenderer) error {
@@ -122,12 +85,12 @@ func Print(format string, data any, renderer TableRenderer) error {
 		// Fallback to JSON if no table renderer provided
 		return PrintJSON(data)
 	}
-	t := NewTable()
+	t := table.New()
 	renderer.RenderTable(t)
 	return t.Flush()
 }
 
-// TableRenderer is implemented by types that can render themselves as a table.
+// TableRenderer is implemented by types that can render themselves as a bordered table.
 type TableRenderer interface {
-	RenderTable(t *Table)
+	RenderTable(t *table.Table)
 }
