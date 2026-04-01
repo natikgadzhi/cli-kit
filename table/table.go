@@ -70,13 +70,13 @@ func (t *Table) Flush() error {
 		return nil
 	}
 	t.fitToTerminal()
-	fmt.Fprintln(t.out, t.line("┌", "┬", "┐"))
-	fmt.Fprintln(t.out, t.formatRow(t.headers))
+	fmt.Fprintln(t.out, t.line("╭", "┬", "╮"))
+	fmt.Fprintln(t.out, t.formatRow(t.headers, true))
 	fmt.Fprintln(t.out, t.line("├", "┼", "┤"))
 	for _, row := range t.rows {
-		fmt.Fprintln(t.out, t.formatRow(row))
+		fmt.Fprintln(t.out, t.formatRow(row, false))
 	}
-	fmt.Fprintln(t.out, t.line("└", "┴", "┘"))
+	fmt.Fprintln(t.out, t.line("╰", "┴", "╯"))
 	return nil
 }
 
@@ -127,7 +127,7 @@ func (t *Table) line(left, mid, right string) string {
 	return left + strings.Join(parts, mid) + right
 }
 
-func (t *Table) formatRow(values []string) string {
+func (t *Table) formatRow(values []string, bold bool) string {
 	parts := make([]string, len(t.widths))
 	for i, w := range t.widths {
 		val := ""
@@ -135,7 +135,11 @@ func (t *Table) formatRow(values []string) string {
 			val = values[i]
 		}
 		val = Truncate(val, w)
-		parts[i] = fmt.Sprintf(" %-*s ", w, val)
+		cell := fmt.Sprintf(" %-*s ", w, val)
+		if bold {
+			cell = " \033[1m" + fmt.Sprintf("%-*s", w, val) + "\033[0m "
+		}
+		parts[i] = cell
 	}
 	return "│" + strings.Join(parts, "│") + "│"
 }

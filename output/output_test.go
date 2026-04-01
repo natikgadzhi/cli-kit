@@ -101,8 +101,8 @@ func TestTableRendererInterface(t *testing.T) {
 		t.Error("expected value '***' for alpha")
 	}
 	// Bordered table should have box-drawing characters.
-	if !strings.Contains(out, "┌") {
-		t.Error("expected bordered table with box-drawing characters")
+	if !strings.Contains(out, "╭") {
+		t.Error("expected bordered table with rounded corners")
 	}
 }
 

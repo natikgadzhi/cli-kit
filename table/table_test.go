@@ -2,10 +2,17 @@ package table
 
 import (
 	"bytes"
+	"regexp"
 	"strings"
 	"testing"
 	"unicode/utf8"
 )
+
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func displayWidth(s string) int {
+	return utf8.RuneCountInString(ansiRegex.ReplaceAllString(s, ""))
+}
 
 func TestBasicRendering(t *testing.T) {
 	var buf bytes.Buffer
@@ -24,7 +31,7 @@ func TestBasicRendering(t *testing.T) {
 	}
 
 	// Top border uses box-drawing characters.
-	if !strings.HasPrefix(lines[0], "┌") || !strings.HasSuffix(lines[0], "┐") {
+	if !strings.HasPrefix(lines[0], "╭") || !strings.HasSuffix(lines[0], "╮") {
 		t.Errorf("top border malformed: %q", lines[0])
 	}
 
@@ -47,7 +54,7 @@ func TestBasicRendering(t *testing.T) {
 	}
 
 	// Bottom border.
-	if !strings.HasPrefix(lines[5], "└") || !strings.HasSuffix(lines[5], "┘") {
+	if !strings.HasPrefix(lines[5], "╰") || !strings.HasSuffix(lines[5], "╯") {
 		t.Errorf("bottom border malformed: %q", lines[5])
 	}
 
@@ -90,7 +97,7 @@ func TestColumnShrinking(t *testing.T) {
 
 	// Every line should be at most 30 display columns wide.
 	for i, line := range lines {
-		w := utf8.RuneCountInString(line)
+		w := displayWidth(line)
 		if w > 30 {
 			t.Errorf("line %d exceeds terminal width 30: display_width=%d %q", i, w, line)
 		}
@@ -115,7 +122,7 @@ func TestColumnShrinkingMultipleColumns(t *testing.T) {
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 
 	for i, line := range lines {
-		w := utf8.RuneCountInString(line)
+		w := displayWidth(line)
 		if w > 40 {
 			t.Errorf("line %d exceeds terminal width 40: display_width=%d %q", i, w, line)
 		}
