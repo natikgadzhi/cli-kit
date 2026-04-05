@@ -11,6 +11,11 @@ import (
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func displayWidth(s string) int {
+	// Use visibleLen for lines that may contain OSC 8 hyperlinks too.
+	return visibleLen(s)
+}
+
+func displayWidthLegacy(s string) int {
 	return utf8.RuneCountInString(ansiRegex.ReplaceAllString(s, ""))
 }
 
@@ -281,6 +286,158 @@ func TestShrinkStopsAtMinWidth(t *testing.T) {
 	for _, w := range tbl.widths {
 		if w < 4 {
 			t.Errorf("column width %d is below minimum of 4", w)
+		}
+	}
+}
+
+func TestVisibleLen(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  int
+	}{
+		{"plain text", "hello", 5},
+		{"empty", "", 0},
+		{"bold", "\033[1mhello\033[0m", 5},
+		{"color", "\033[31mred text\033[0m", 8},
+		{"multiple SGR", "\033[1;31mbold red\033[0m", 8},
+		{"OSC 8 hyperlink", "\033]8;;https://example.com\033\\click here\033]8;;\033\\", 10},
+		{"nested: bold inside hyperlink", "\033]8;;https://x.com\033\\\033[1mBold Link\033[0m\033]8;;\033\\", 9},
+		{"mixed plain and ANSI", "pre\033[1mbold\033[0mpost", 11},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := visibleLen(tt.input)
+			if got != tt.want {
+				t.Errorf("visibleLen(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripANSI(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain", "hello", "hello"},
+		{"bold", "\033[1mhello\033[0m", "hello"},
+		{"hyperlink", "\033]8;;https://example.com\033\\click\033]8;;\033\\", "click"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripANSI(tt.input)
+			if got != tt.want {
+				t.Errorf("stripANSI(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHyperlink(t *testing.T) {
+	got := Hyperlink("https://example.com", "click")
+	want := "\033]8;;https://example.com\033\\click\033]8;;\033\\"
+	if got != want {
+		t.Errorf("Hyperlink() = %q, want %q", got, want)
+	}
+	// Visible length should be just the text.
+	if vl := visibleLen(got); vl != 5 {
+		t.Errorf("visibleLen(Hyperlink()) = %d, want 5", vl)
+	}
+}
+
+func TestTruncateWithANSI(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{
+			"ANSI fits, returned as-is",
+			"\033[1mhello\033[0m",
+			5,
+			"\033[1mhello\033[0m",
+		},
+		{
+			"ANSI too long, stripped and truncated",
+			"\033[1mhello world\033[0m",
+			5,
+			"hell…",
+		},
+		{
+			"hyperlink fits",
+			Hyperlink("https://example.com", "hi"),
+			5,
+			Hyperlink("https://example.com", "hi"),
+		},
+		{
+			"hyperlink too long, stripped and truncated",
+			Hyperlink("https://example.com", "click here now"),
+			5,
+			"clic…",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Truncate(tt.input, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("Truncate(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTableWithHyperlinks(t *testing.T) {
+	var buf bytes.Buffer
+	tbl := NewWriter(&buf)
+	tbl.termWidthFunc = func() int { return 0 } // no shrinking
+
+	link := Hyperlink("https://example.com", "Example")
+	tbl.Header("Name", "Link")
+	tbl.Row("alpha", link)
+	tbl.Row("beta", "plain text")
+	tbl.Flush()
+
+	out := buf.String()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+
+	// All lines should have the same visible width (columns aligned).
+	widths := make([]int, len(lines))
+	for i, line := range lines {
+		widths[i] = visibleLen(line)
+	}
+	for i := 1; i < len(widths); i++ {
+		if widths[i] != widths[0] {
+			t.Errorf("line %d visible width %d != line 0 visible width %d\nline 0: %q\nline %d: %q",
+				i, widths[i], widths[0], lines[0], i, lines[i])
+		}
+	}
+
+	// The hyperlink content should be present.
+	if !strings.Contains(out, "Example") {
+		t.Error("expected hyperlink text 'Example' in output")
+	}
+}
+
+func TestTableWithHyperlinksShrinking(t *testing.T) {
+	var buf bytes.Buffer
+	tbl := NewWriter(&buf)
+	tbl.termWidthFunc = func() int { return 30 }
+
+	link := Hyperlink("https://example.com", "A very long hyperlink text here")
+	tbl.Header("Name", "Link")
+	tbl.Row("a", link)
+	tbl.Flush()
+
+	out := buf.String()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+
+	for i, line := range lines {
+		w := visibleLen(line)
+		if w > 30 {
+			t.Errorf("line %d exceeds terminal width 30: visible_width=%d %q", i, w, line)
 		}
 	}
 }

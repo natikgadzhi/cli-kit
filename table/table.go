@@ -18,9 +18,65 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
+
+// visibleLen returns the number of visible characters (runes) in s,
+// ignoring ANSI CSI sequences (e.g. \033[1m) and OSC 8 hyperlinks
+// (e.g. \033]8;params;uri\033\).
+func visibleLen(s string) int {
+	return len([]rune(stripANSI(s)))
+}
+
+// stripANSI removes all ANSI CSI sequences and OSC sequences from s,
+// returning only the visible text.
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] == '\033' && i+1 < len(s) {
+			if s[i+1] == '[' {
+				j := i + 2
+				for j < len(s) && (s[j] < '@' || s[j] > '~') {
+					j++
+				}
+				if j < len(s) {
+					j++
+				}
+				i = j
+				continue
+			}
+			if s[i+1] == ']' {
+				j := i + 2
+				for j < len(s) {
+					if s[j] == '\a' {
+						j++
+						break
+					}
+					if s[j] == '\033' && j+1 < len(s) && s[j+1] == '\\' {
+						j += 2
+						break
+					}
+					j++
+				}
+				i = j
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+// Hyperlink returns an OSC 8 hyperlink sequence that renders text as
+// a clickable link to url in supporting terminals.
+func Hyperlink(url, text string) string {
+	return "\033]8;;" + url + "\033\\" + text + "\033]8;;\033\\"
+}
 
 // Table renders a bordered ASCII table to an io.Writer.
 type Table struct {
@@ -53,7 +109,7 @@ func (t *Table) Header(columns ...string) {
 	t.widths = make([]int, len(columns))
 	for i, c := range columns {
 		t.headers[i] = strings.ToUpper(c)
-		t.widths[i] = len(t.headers[i])
+		t.widths[i] = visibleLen(t.headers[i])
 	}
 }
 
@@ -61,8 +117,8 @@ func (t *Table) Header(columns ...string) {
 func (t *Table) Row(values ...string) {
 	t.rows = append(t.rows, values)
 	for i, v := range values {
-		if i < len(t.widths) && len(v) > t.widths[i] {
-			t.widths[i] = len(v)
+		if i < len(t.widths) && visibleLen(v) > t.widths[i] {
+			t.widths[i] = visibleLen(v)
 		}
 	}
 }
@@ -102,7 +158,7 @@ func (t *Table) fitToTerminal() {
 			}
 		}
 		// Don't shrink below the header length or 4 chars (room for "x…").
-		minWidth := len(t.headers[widest])
+		minWidth := visibleLen(t.headers[widest])
 		if minWidth < 4 {
 			minWidth = 4
 		}
@@ -141,24 +197,36 @@ func (t *Table) formatRow(values []string, bold bool) string {
 			val = values[i]
 		}
 		val = Truncate(val, w)
-		cell := fmt.Sprintf(" %-*s ", w, val)
+		// Go's %-*s pads by rune count. Add the difference between
+		// the total rune count and the visible rune count (i.e. the
+		// rune count of escape sequences) so alignment is correct.
+		padWidth := w + (utf8.RuneCountInString(val) - visibleLen(val))
+		cell := fmt.Sprintf(" %-*s ", padWidth, val)
 		if bold {
-			cell = " \033[1m" + fmt.Sprintf("%-*s", w, val) + "\033[0m "
+			cell = " \033[1m" + fmt.Sprintf("%-*s", padWidth, val) + "\033[0m "
 		}
 		parts[i] = cell
 	}
 	return "│" + strings.Join(parts, "│") + "│"
 }
 
-// Truncate shortens s to maxLen, replacing the last char with "…" if needed.
+// Truncate shortens s to maxLen visible characters, replacing the last
+// visible char with "…" if needed. If s contains ANSI escape sequences
+// and must be truncated, all formatting is stripped and the plain text
+// is truncated (this avoids cutting through escape sequences).
 func Truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	vLen := visibleLen(s)
+	if vLen <= maxLen {
 		return s
 	}
 	if maxLen <= 1 {
 		return "…"
 	}
-	return s[:maxLen-1] + "…"
+	plain := stripANSI(s)
+	if len(plain) > maxLen-1 {
+		plain = plain[:maxLen-1]
+	}
+	return plain + "…"
 }
 
 func defaultTerminalWidth() int {
