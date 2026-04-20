@@ -2,12 +2,14 @@
 //
 // Tables automatically adapt to terminal width by iteratively shrinking
 // the widest columns. Values that exceed the column width are truncated
-// with an ellipsis ("…").
+// with an ellipsis ("…") by default, or word-wrapped across multiple
+// visual lines when the column is marked via WrapColumns.
 //
 // Usage:
 //
 //	t := table.New()
 //	t.Header("Name", "Status", "Description")
+//	t.WrapColumns(2) // wrap the Description column instead of truncating
 //	t.Row("alpha", "active", "First item")
 //	t.Row("beta", "inactive", "Second item")
 //	t.Flush()
@@ -88,6 +90,9 @@ type Table struct {
 	// RowBorders adds a separator line between each data row.
 	RowBorders bool
 
+	// wrapColumns holds the set of column indices marked for word-wrapping.
+	wrapColumns map[int]bool
+
 	// termWidthFunc is used to determine the terminal width.
 	// It can be overridden for testing.
 	termWidthFunc func() int
@@ -120,6 +125,24 @@ func (t *Table) Row(values ...string) {
 		if i < len(t.widths) && visibleLen(v) > t.widths[i] {
 			t.widths[i] = visibleLen(v)
 		}
+	}
+}
+
+// WrapColumns marks the given column indices for word-wrapping. Content
+// in a wrapped column that exceeds the column width is broken across
+// multiple visual lines instead of being truncated with an ellipsis.
+// Non-wrapped columns on a wrapped row are padded with blanks on
+// continuation lines.
+//
+// Wrapped columns still participate in fit-to-terminal shrinking — a
+// narrow terminal just causes earlier wrapping. Embedded newlines in
+// the source string are preserved as hard line breaks.
+func (t *Table) WrapColumns(indices ...int) {
+	if t.wrapColumns == nil {
+		t.wrapColumns = make(map[int]bool)
+	}
+	for _, i := range indices {
+		t.wrapColumns[i] = true
 	}
 }
 
@@ -189,25 +212,108 @@ func (t *Table) line(left, mid, right string) string {
 	return left + strings.Join(parts, mid) + right
 }
 
+// formatRow renders a row, producing multiple newline-joined lines when
+// any wrap-enabled column requires wrapping. Headers never wrap.
 func (t *Table) formatRow(values []string, bold bool) string {
-	parts := make([]string, len(t.widths))
+	cellLines := make([][]string, len(t.widths))
+	maxLines := 1
 	for i, w := range t.widths {
 		val := ""
 		if i < len(values) {
 			val = values[i]
 		}
-		val = Truncate(val, w)
-		// Go's %-*s pads by rune count. Add the difference between
-		// the total rune count and the visible rune count (i.e. the
-		// rune count of escape sequences) so alignment is correct.
-		padWidth := w + (utf8.RuneCountInString(val) - visibleLen(val))
-		cell := fmt.Sprintf(" %-*s ", padWidth, val)
-		if bold {
-			cell = " \033[1m" + fmt.Sprintf("%-*s", padWidth, val) + "\033[0m "
+		if !bold && t.wrapColumns[i] {
+			cellLines[i] = wrapVisible(val, w)
+		} else {
+			cellLines[i] = []string{Truncate(val, w)}
 		}
-		parts[i] = cell
+		if len(cellLines[i]) > maxLines {
+			maxLines = len(cellLines[i])
+		}
 	}
-	return "│" + strings.Join(parts, "│") + "│"
+
+	var b strings.Builder
+	for line := 0; line < maxLines; line++ {
+		if line > 0 {
+			b.WriteByte('\n')
+		}
+		parts := make([]string, len(t.widths))
+		for i, w := range t.widths {
+			val := ""
+			if line < len(cellLines[i]) {
+				val = cellLines[i][line]
+			}
+			padWidth := w + (utf8.RuneCountInString(val) - visibleLen(val))
+			cell := fmt.Sprintf(" %-*s ", padWidth, val)
+			if bold {
+				cell = " \033[1m" + fmt.Sprintf("%-*s", padWidth, val) + "\033[0m "
+			}
+			parts[i] = cell
+		}
+		b.WriteString("│" + strings.Join(parts, "│") + "│")
+	}
+	return b.String()
+}
+
+// wrapVisible word-wraps s to width visible characters. It splits on
+// whitespace and packs words greedily; words longer than the column
+// are hard-broken. Existing newlines produce hard line breaks. ANSI
+// escapes are stripped before wrapping because preserving them across
+// line breaks is error-prone and rarely useful in wrapped columns.
+func wrapVisible(s string, width int) []string {
+	if width <= 0 {
+		return []string{s}
+	}
+	stripped := stripANSI(s)
+	var out []string
+	for _, para := range strings.Split(stripped, "\n") {
+		words := strings.Fields(para)
+		if len(words) == 0 {
+			out = append(out, "")
+			continue
+		}
+		var cur strings.Builder
+		curLen := 0
+		for _, word := range words {
+			wLen := utf8.RuneCountInString(word)
+			if wLen > width {
+				if curLen > 0 {
+					out = append(out, cur.String())
+					cur.Reset()
+					curLen = 0
+				}
+				runes := []rune(word)
+				for len(runes) > width {
+					out = append(out, string(runes[:width]))
+					runes = runes[width:]
+				}
+				if len(runes) > 0 {
+					cur.WriteString(string(runes))
+					curLen = len(runes)
+				}
+				continue
+			}
+			if curLen == 0 {
+				cur.WriteString(word)
+				curLen = wLen
+				continue
+			}
+			if curLen+1+wLen > width {
+				out = append(out, cur.String())
+				cur.Reset()
+				cur.WriteString(word)
+				curLen = wLen
+				continue
+			}
+			cur.WriteByte(' ')
+			cur.WriteString(word)
+			curLen += 1 + wLen
+		}
+		if curLen > 0 {
+			out = append(out, cur.String())
+		}
+	}
+	return out
 }
 
 // Truncate shortens s to maxLen visible characters, replacing the last

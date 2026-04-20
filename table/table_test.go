@@ -421,6 +421,116 @@ func TestTableWithHyperlinks(t *testing.T) {
 	}
 }
 
+func TestWrapColumns_BreaksLongText(t *testing.T) {
+	var buf bytes.Buffer
+	tbl := NewWriter(&buf)
+	tbl.termWidthFunc = func() int { return 0 }
+
+	tbl.Header("Name", "Detail")
+	tbl.WrapColumns(1)
+	tbl.Row("repo-a", "short")
+	tbl.Row("repo-b", "this is a much longer message that should be wrapped across several lines in the detail column")
+	tbl.Flush()
+
+	out := buf.String()
+
+	// No ellipsis should appear — wrap replaces truncation for this column.
+	if strings.Contains(out, "…") {
+		t.Errorf("wrapped column should not truncate with ellipsis:\n%s", out)
+	}
+
+	// Short rows still render as a single visual line between borders.
+	if !strings.Contains(out, "short") {
+		t.Errorf("expected short value to render:\n%s", out)
+	}
+
+	// Every line must be the same visible width (table alignment holds).
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	base := visibleLen(lines[0])
+	for i, line := range lines {
+		if visibleLen(line) != base {
+			t.Errorf("line %d width %d != expected %d: %q", i, visibleLen(line), base, line)
+		}
+	}
+
+	// The wrapped message must appear in full (joining the wrapped fragments
+	// with a single space reproduces the original words in order).
+	joined := strings.Join(strings.Fields(stripANSI(out)), " ")
+	if !strings.Contains(joined, "this is a much longer message that should be wrapped across several lines in the detail column") {
+		t.Errorf("wrapped content is missing or reordered:\n%s", out)
+	}
+}
+
+func TestWrapColumns_PreservesNewlines(t *testing.T) {
+	var buf bytes.Buffer
+	tbl := NewWriter(&buf)
+	tbl.termWidthFunc = func() int { return 0 }
+
+	tbl.Header("Col")
+	tbl.WrapColumns(0)
+	tbl.Row("line one\nline two\nline three")
+	tbl.Flush()
+
+	out := buf.String()
+	// Count visible rows between the header separator and the bottom border.
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	// top border, header, sep, 3 wrapped data lines, bottom border = 7.
+	if len(lines) != 7 {
+		t.Errorf("expected 7 lines for 3 hard-broken data lines, got %d:\n%s", len(lines), out)
+	}
+}
+
+func TestWrapColumns_HardBreaksOverlongWord(t *testing.T) {
+	var buf bytes.Buffer
+	tbl := NewWriter(&buf)
+	tbl.termWidthFunc = func() int { return 20 }
+
+	tbl.Header("A", "B")
+	tbl.WrapColumns(1)
+	// A single 40-char token with no spaces — must hard-break.
+	tbl.Row("x", strings.Repeat("z", 40))
+	tbl.Flush()
+
+	out := buf.String()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	for i, line := range lines {
+		if visibleLen(line) > 20 {
+			t.Errorf("line %d exceeds terminal width 20: %d %q", i, visibleLen(line), line)
+		}
+	}
+	if strings.Contains(out, "…") {
+		t.Errorf("wrap column should not ellipsize:\n%s", out)
+	}
+}
+
+func TestWrapColumns_OtherColumnsPadContinuationLines(t *testing.T) {
+	var buf bytes.Buffer
+	tbl := NewWriter(&buf)
+	tbl.termWidthFunc = func() int { return 0 }
+
+	tbl.Header("Name", "Detail")
+	tbl.WrapColumns(1)
+	tbl.Row("repo-a", "one two three four five six seven eight nine ten")
+	tbl.Flush()
+
+	out := buf.String()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+
+	// repo-a appears exactly once — continuation lines leave Name empty.
+	count := strings.Count(out, "repo-a")
+	if count != 1 {
+		t.Errorf("expected repo-a to appear once (only on the first visual line), got %d:\n%s", count, out)
+	}
+
+	// All data lines share the same visible width.
+	base := visibleLen(lines[0])
+	for i, line := range lines {
+		if visibleLen(line) != base {
+			t.Errorf("line %d misaligned: width=%d want=%d %q", i, visibleLen(line), base, line)
+		}
+	}
+}
+
 func TestTableWithHyperlinksShrinking(t *testing.T) {
 	var buf bytes.Buffer
 	tbl := NewWriter(&buf)
