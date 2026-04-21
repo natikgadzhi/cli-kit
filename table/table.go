@@ -32,6 +32,20 @@ func visibleLen(s string) int {
 	return len([]rune(stripANSI(s)))
 }
 
+// longestLineWidth returns the visible length of the longest line in s
+// after splitting on "\n". Used for sizing wrap-enabled columns: an
+// embedded newline naturally breaks the column, so a multi-line value
+// shouldn't claim width equal to its total length.
+func longestLineWidth(s string) int {
+	max := 0
+	for _, line := range strings.Split(s, "\n") {
+		if n := visibleLen(line); n > max {
+			max = n
+		}
+	}
+	return max
+}
+
 // stripANSI removes all ANSI CSI sequences and OSC sequences from s,
 // returning only the visible text.
 func stripANSI(s string) string {
@@ -122,8 +136,19 @@ func (t *Table) Header(columns ...string) {
 func (t *Table) Row(values ...string) {
 	t.rows = append(t.rows, values)
 	for i, v := range values {
-		if i < len(t.widths) && visibleLen(v) > t.widths[i] {
-			t.widths[i] = visibleLen(v)
+		if i >= len(t.widths) {
+			continue
+		}
+		// For wrap-enabled columns, measure by the longest *line* in the
+		// value (post-newline split) rather than the total length. A
+		// multi-line error message should not claim a column width equal
+		// to the sum of its lines.
+		w := visibleLen(v)
+		if t.wrapColumns[i] {
+			w = longestLineWidth(v)
+		}
+		if w > t.widths[i] {
+			t.widths[i] = w
 		}
 	}
 }
@@ -165,11 +190,25 @@ func (t *Table) Flush() error {
 	return nil
 }
 
+// fallbackTerminalWidth is used when the terminal width cannot be
+// detected (stdout is a pipe, or the platform doesn't support the
+// ioctl). 120 is a sensible default — wide enough to fit typical
+// tables without excessive wrapping, narrow enough to keep wrap-enabled
+// cells from running off the screen in a real terminal.
+const fallbackTerminalWidth = 120
+
 // fitToTerminal shrinks the widest columns to fit within the terminal width.
 func (t *Table) fitToTerminal() {
 	termWidth := t.termWidthFunc()
 	if termWidth <= 0 {
-		return
+		// Unknown terminal width — only enforce a budget when at least
+		// one column is wrap-enabled, so the table still produces useful
+		// output for narrow terminals we can't detect. Columns that
+		// aren't wrap-enabled are left at their natural width.
+		if len(t.wrapColumns) == 0 {
+			return
+		}
+		termWidth = fallbackTerminalWidth
 	}
 
 	for t.tableWidth() > termWidth {

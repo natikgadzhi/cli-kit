@@ -531,6 +531,59 @@ func TestWrapColumns_OtherColumnsPadContinuationLines(t *testing.T) {
 	}
 }
 
+func TestWrapColumns_FallbackWidthWhenNoTerminal(t *testing.T) {
+	var buf bytes.Buffer
+	tbl := NewWriter(&buf)
+	// No terminal width detected — but at least one column is wrap-enabled,
+	// so fit-to-terminal should use the fallback width and actually shrink.
+	tbl.termWidthFunc = func() int { return 0 }
+
+	tbl.Header("Name", "Detail")
+	tbl.WrapColumns(1)
+	// Detail is 300 chars of words — forces wrapping at whatever width
+	// the fallback settles on.
+	long := strings.TrimSpace(strings.Repeat("word ", 60))
+	tbl.Row("repo", long)
+	tbl.Flush()
+
+	out := buf.String()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	for i, line := range lines {
+		if visibleLen(line) > fallbackTerminalWidth {
+			t.Errorf("line %d exceeds fallback width %d: %d %q",
+				i, fallbackTerminalWidth, visibleLen(line), line)
+		}
+	}
+	// Should have wrapped to several rows.
+	dataLines := len(lines) - 4 // top, header, sep, bottom
+	if dataLines < 2 {
+		t.Errorf("expected wrap to produce multiple data lines, got %d:\n%s", dataLines, out)
+	}
+}
+
+func TestWrapColumns_MultiLineValueSizedByLongestLine(t *testing.T) {
+	var buf bytes.Buffer
+	tbl := NewWriter(&buf)
+	tbl.termWidthFunc = func() int { return 0 }
+
+	tbl.Header("Detail")
+	tbl.WrapColumns(0)
+	// Three short lines. The column should claim width ~10, not 28 (sum).
+	tbl.Row("aaa\nbbbb\nccccc")
+	tbl.Flush()
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	// Any table line must be ≤ longest-line + borders/padding = 5 + 4 = 9.
+	// We loosely assert the total line width stays well below "sum of all lines".
+	const maxAllowed = 20
+	for i, line := range lines {
+		if visibleLen(line) > maxAllowed {
+			t.Errorf("line %d width=%d exceeds %d (column claimed too much): %q",
+				i, visibleLen(line), maxAllowed, line)
+		}
+	}
+}
+
 func TestTableWithHyperlinksShrinking(t *testing.T) {
 	var buf bytes.Buffer
 	tbl := NewWriter(&buf)
