@@ -20,16 +20,17 @@ import (
 	"io"
 	"os"
 	"strings"
-	"unicode/utf8"
 
+	"github.com/mattn/go-runewidth"
 	"golang.org/x/term"
 )
 
-// visibleLen returns the number of visible characters (runes) in s,
+// visibleLen returns the visible display width of s in terminal cells,
 // ignoring ANSI CSI sequences (e.g. \033[1m) and OSC 8 hyperlinks
-// (e.g. \033]8;params;uri\033\).
+// (e.g. \033]8;params;uri\033\). Wide characters (emoji, CJK glyphs)
+// count as the number of cells they actually occupy on screen.
 func visibleLen(s string) int {
-	return len([]rune(stripANSI(s)))
+	return runewidth.StringWidth(stripANSI(s))
 }
 
 // longestLineWidth returns the visible length of the longest line in s
@@ -282,23 +283,35 @@ func (t *Table) formatRow(values []string, bold bool) string {
 			if line < len(cellLines[i]) {
 				val = cellLines[i][line]
 			}
-			padWidth := w + (utf8.RuneCountInString(val) - visibleLen(val))
-			cell := fmt.Sprintf(" %-*s ", padWidth, val)
+			padded := padRight(val, w)
 			if bold {
-				cell = " \033[1m" + fmt.Sprintf("%-*s", padWidth, val) + "\033[0m "
+				parts[i] = " \033[1m" + padded + "\033[0m "
+			} else {
+				parts[i] = " " + padded + " "
 			}
-			parts[i] = cell
 		}
 		b.WriteString("│" + strings.Join(parts, "│") + "│")
 	}
 	return b.String()
 }
 
-// wrapVisible word-wraps s to width visible characters. It splits on
+// padRight appends spaces to s until its visible width reaches w.
+// If s is already wider than w, s is returned unchanged.
+func padRight(s string, w int) string {
+	vw := visibleLen(s)
+	if vw >= w {
+		return s
+	}
+	return s + strings.Repeat(" ", w-vw)
+}
+
+// wrapVisible word-wraps s to width visible cells. It splits on
 // whitespace and packs words greedily; words longer than the column
-// are hard-broken. Existing newlines produce hard line breaks. ANSI
-// escapes are stripped before wrapping because preserving them across
-// line breaks is error-prone and rarely useful in wrapped columns.
+// are hard-broken on cell boundaries. Existing newlines produce hard
+// line breaks. ANSI escapes are stripped before wrapping because
+// preserving them across line breaks is error-prone and rarely useful
+// in wrapped columns. Wide characters (emoji, CJK) are measured by
+// their actual cell width.
 func wrapVisible(s string, width int) []string {
 	if width <= 0 {
 		return []string{s}
@@ -314,21 +327,22 @@ func wrapVisible(s string, width int) []string {
 		var cur strings.Builder
 		curLen := 0
 		for _, word := range words {
-			wLen := utf8.RuneCountInString(word)
+			wLen := runewidth.StringWidth(word)
 			if wLen > width {
 				if curLen > 0 {
 					out = append(out, cur.String())
 					cur.Reset()
 					curLen = 0
 				}
-				runes := []rune(word)
-				for len(runes) > width {
-					out = append(out, string(runes[:width]))
-					runes = runes[width:]
+				rest := word
+				for runewidth.StringWidth(rest) > width {
+					chunk := runewidth.Truncate(rest, width, "")
+					out = append(out, chunk)
+					rest = rest[len(chunk):]
 				}
-				if len(runes) > 0 {
-					cur.WriteString(string(runes))
-					curLen = len(runes)
+				if rest != "" {
+					cur.WriteString(rest)
+					curLen = runewidth.StringWidth(rest)
 				}
 				continue
 			}
@@ -355,23 +369,21 @@ func wrapVisible(s string, width int) []string {
 	return out
 }
 
-// Truncate shortens s to maxLen visible characters, replacing the last
-// visible char with "…" if needed. If s contains ANSI escape sequences
-// and must be truncated, all formatting is stripped and the plain text
-// is truncated (this avoids cutting through escape sequences).
+// Truncate shortens s so its visual width is at most maxLen cells. If
+// truncation is needed, ANSI escapes are stripped and the plain text
+// is truncated with an ellipsis ("…") that itself consumes one cell.
+// Wide characters (emoji, CJK) are accounted for by their actual cell
+// width.
 func Truncate(s string, maxLen int) string {
-	vLen := visibleLen(s)
-	if vLen <= maxLen {
+	if visibleLen(s) <= maxLen {
 		return s
 	}
 	if maxLen <= 1 {
 		return "…"
 	}
 	plain := stripANSI(s)
-	if len(plain) > maxLen-1 {
-		plain = plain[:maxLen-1]
-	}
-	return plain + "…"
+	truncated := runewidth.Truncate(plain, maxLen-1, "")
+	return truncated + "…"
 }
 
 func defaultTerminalWidth() int {

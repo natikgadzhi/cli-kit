@@ -148,12 +148,37 @@ func TestTruncateWithEllipsis(t *testing.T) {
 		{"hello", 0, "…"},            // Zero width: just ellipsis.
 		{"", 5, ""},                   // Empty string.
 		{"abcdef", 4, "abc…"},        // Standard truncation.
+		{"🧵🧵🧵", 4, "🧵…"},          // Emoji truncation: 2 cells + ellipsis.
+		{"中文测试", 5, "中文…"},        // CJK truncation: 4 cells + ellipsis.
 	}
 
 	for _, tt := range tests {
 		got := Truncate(tt.input, tt.maxLen)
 		if got != tt.want {
 			t.Errorf("Truncate(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+		}
+	}
+}
+
+// TestTableRendersEmoji verifies that table rows containing wide
+// characters (emoji) align correctly. Without runewidth-aware width
+// measurement, the right-hand border drifts on rows containing emoji.
+func TestTableRendersEmoji(t *testing.T) {
+	var buf bytes.Buffer
+	tbl := NewWriter(&buf)
+	tbl.termWidthFunc = func() int { return 0 }
+	tbl.Header("Name", "Text")
+	tbl.Row("alpha", "🧵 thread reply")
+	tbl.Row("beta", "plain text")
+	if err := tbl.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	want := visibleLen(lines[0])
+	for i, line := range lines[1:] {
+		if got := visibleLen(line); got != want {
+			t.Errorf("line %d width = %d, want %d\n%s", i+1, got, want, buf.String())
 		}
 	}
 }
@@ -304,6 +329,9 @@ func TestVisibleLen(t *testing.T) {
 		{"OSC 8 hyperlink", "\033]8;;https://example.com\033\\click here\033]8;;\033\\", 10},
 		{"nested: bold inside hyperlink", "\033]8;;https://x.com\033\\\033[1mBold Link\033[0m\033]8;;\033\\", 9},
 		{"mixed plain and ANSI", "pre\033[1mbold\033[0mpost", 11},
+		{"emoji counts as 2 cells", "🧵", 2},
+		{"emoji mixed with ASCII", "a🧵b", 4},
+		{"CJK counts as 2 cells", "中文", 4},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
